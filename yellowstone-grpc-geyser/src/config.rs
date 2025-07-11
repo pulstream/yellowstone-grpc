@@ -69,11 +69,16 @@ pub struct ConfigTokio {
     /// Number of worker threads in Tokio runtime
     pub worker_threads: Option<usize>,
     /// Threads affinity
+    #[cfg(feature = "affinity")]
     #[serde(deserialize_with = "ConfigTokio::deserialize_affinity")]
+    pub affinity: Option<Vec<usize>>,
+    #[cfg(not(feature = "affinity"))]
+    #[serde(skip)]
     pub affinity: Option<Vec<usize>>,
 }
 
 impl ConfigTokio {
+    #[cfg(feature = "affinity")]
     fn deserialize_affinity<'de, D>(deserializer: D) -> Result<Option<Vec<usize>>, D::Error>
     where
         D: Deserializer<'de>,
@@ -85,6 +90,7 @@ impl ConfigTokio {
     }
 }
 
+#[cfg(feature = "affinity")]
 fn parse_taskset(taskset: &str) -> Result<Vec<usize>, String> {
     let mut set = HashSet::new();
     for taskset2 in taskset.split(',') {
