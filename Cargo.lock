@@ -5774,3 +5774,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "tonic"
+version = "0.14.0"
+source = "git+https://github.com/pulstream/tonic.git?rev=f8adc446752fabca4bebb45dc9e484d2d38d9c89#f8adc446752fabca4bebb45dc9e484d2d38d9c89"
