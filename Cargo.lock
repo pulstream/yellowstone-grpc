@@ -5519,6 +5519,7 @@ dependencies = [
  "futures",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-health",
  "yellowstone-grpc-proto",

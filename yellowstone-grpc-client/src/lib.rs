@@ -1,5 +1,6 @@
 pub use tonic::{service::Interceptor, transport::ClientTlsConfig};
 use {
+    tokio_stream,
     bytes::Bytes,
     futures::{
         channel::mpsc,
@@ -22,6 +23,9 @@ use {
         IsBlockhashValidRequest, IsBlockhashValidResponse, PingRequest, PongResponse,
         SubscribeReplayInfoRequest, SubscribeReplayInfoResponse, SubscribeRequest, SubscribeUpdate,
     },
+};
+use tonic::{
+    codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
 };
 
 #[derive(Debug, Clone)]
@@ -57,6 +61,7 @@ pub type GeyserGrpcClientResult<T> = Result<T, GeyserGrpcClientError>;
 pub struct GeyserGrpcClient<F> {
     pub health: HealthClient<InterceptedService<Channel, F>>,
     pub geyser: GeyserClient<InterceptedService<Channel, F>>,
+    channel: Channel,
 }
 
 impl GeyserGrpcClient<()> {
@@ -75,8 +80,9 @@ impl<F: Interceptor> GeyserGrpcClient<F> {
     pub const fn new(
         health: HealthClient<InterceptedService<Channel, F>>,
         geyser: GeyserClient<InterceptedService<Channel, F>>,
+        channel: Channel,
     ) -> Self {
-        Self { health, geyser }
+        Self { health, geyser, channel }
     }
 
     // Health
@@ -106,6 +112,33 @@ impl<F: Interceptor> GeyserGrpcClient<F> {
         impl Stream<Item = Result<SubscribeUpdate, Status>>,
     )> {
         self.subscribe_with_request(None).await
+    }
+
+    pub async fn subscribe_raw(
+        &mut self,
+        request: SubscribeRequest,
+    ) -> GeyserGrpcClientResult<impl Stream<Item = Result<Bytes, Status>>> {
+        use yellowstone_grpc_proto::prost::Message;
+        
+        let encoded_bytes = Bytes::from(request.encode_to_vec());
+        let mut raw_client = tonic::client::Grpc::new(self.channel.clone());
+        let codec = RawBytesCodec;
+        
+        let path = tonic::codegen::http::uri::PathAndQuery::from_static(
+            "/geyser.Geyser/Subscribe"
+        );
+        
+        let request = tonic::Request::new(tokio_stream::once(encoded_bytes));
+        let response = raw_client.streaming(request, path, codec).await?;
+            
+        Ok(response.into_inner())
+    }
+
+    /// Parse raw bytes when needed
+    pub fn parse_raw_bytes(bytes: &[u8]) -> Result<SubscribeUpdate, Status> {
+        use yellowstone_grpc_proto::prost::Message;
+        SubscribeUpdate::decode(bytes)
+            .map_err(|e| Status::internal(format!("Decode error: {}", e)))
     }
 
     pub async fn subscribe_with_request(
@@ -274,8 +307,9 @@ impl GeyserGrpcBuilder {
         }
 
         Ok(GeyserGrpcClient::new(
-            HealthClient::with_interceptor(channel, interceptor),
+            HealthClient::with_interceptor(channel.clone(), interceptor),
             geyser,
+            channel,
         ))
     }
 
@@ -420,6 +454,58 @@ impl GeyserGrpcBuilder {
             max_encoding_message_size: Some(limit),
             ..self
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RawBytesCodec;
+
+impl Codec for RawBytesCodec {
+    type Encode = Bytes;
+    type Decode = Bytes;
+    type Encoder = RawBytesEncoder;
+    type Decoder = RawBytesDecoder;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        RawBytesEncoder
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        RawBytesDecoder
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RawBytesEncoder;
+
+impl Encoder for RawBytesEncoder {
+    type Item = Bytes;
+    type Error = Status;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
+        use bytes::BufMut;
+        dst.put_slice(&item);  // Zero-copy!
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RawBytesDecoder;
+
+impl Decoder for RawBytesDecoder {
+    type Item = Bytes;
+    type Error = Status;
+
+    fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
+        use bytes::Buf;
+        if !src.has_remaining() {
+            return Ok(None);
+        }
+        
+        let len = src.remaining();
+        let mut buf = vec![0u8; len];
+        src.copy_to_slice(&mut buf);
+        Ok(Some(Bytes::from(buf)))
     }
 }
 
